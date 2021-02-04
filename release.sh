@@ -1157,7 +1157,6 @@ else
 				-e '/git-svn-id:/d' -e '/^[[:space:]]*This reverts commit [0-9a-f]\{40\}\.[[:space:]]*$/d' \
 				-e '/^[[:space:]]*$/d' \
 		| line_ending_filter >> "$pkgdir/$changelog"
-	fi
 
 	echo "$(<"$pkgdir/$changelog")"
 	end_group "changelog"
