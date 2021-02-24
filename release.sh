@@ -368,12 +368,7 @@ set_info_git() {
 		si_previous_tag=$( git -C "$si_repo_dir" describe --tags --abbrev=0 2>/dev/null )
 		si_tag=
 	else # we're on a tag, just jump back one commit
-		if [[ $si_tag != *"beta"* && $si_tag != *"alpha"* ]]; then
-			# full release, ignore beta tags
-			si_previous_tag=$( git -C "$si_repo_dir" describe --tags --abbrev=0 --exclude="*alpha*" --exclude="*beta*" HEAD~ 2>/dev/null )
-		else
-			si_previous_tag=$( git -C "$si_repo_dir" describe --tags --abbrev=0 --exclude="*alpha*" HEAD~ 2>/dev/null )
-		fi
+		si_previous_tag=$( git -C "$si_repo_dir" describe --tags --abbrev=0 HEAD~ 2>/dev/null )
 	fi
 }
 
@@ -398,6 +393,7 @@ esac
 
 tag=$si_tag
 [[ -z "$tag" || "${tag,,}" == *"alpha"* ]] && alpha="true"
+[[ -z "$tag" || "${tag,,}" == *"beta"* ]] && alpha="true"
 project_version=$si_project_version
 previous_version=$si_previous_tag
 project_hash=$si_project_hash
