@@ -30,11 +30,11 @@
 ## USER OPTIONS
 
 # Secrets for uploading
-cf_token=
 github_token=
-wowi_token=
+wago_token=
 
 # Variables set via command-line options
+wagoid=
 topdir=
 releasedir=
 overwrite=
@@ -74,13 +74,14 @@ usage() {
 }
 
 OPTIND=1
-while getopts ":celLzusop:dw:r:t:g:m:" opt; do
+while getopts ":celLzusop:dw:a:r:t:g:m:" opt; do
 	case $opt in
 	c)
 		# Skip copying files into the package directory.
 		skip_copying="true"
 		skip_upload="true"
 		;;
+	a) wagoid="$OPTARG" ;; # Set Wago Addons project id
 	d)
 		# Skip uploading.
 		skip_upload="true"
@@ -249,6 +250,7 @@ elif [ -f ".env" ]; then
 fi
 
 [ -z "$github_token" ] && github_token=$GITHUB_OAUTH
+[ -z "$wago_token" ] && wago_token=$WAGO_API_TOKEN
 
 # Set $releasedir to the directory which will contain the generated addon zipfile.
 if [ -z "$releasedir" ]; then
@@ -712,7 +714,15 @@ fi
 # Get the title of the project for using in the changelog.
 project=$( echo "$toc_file" | awk '/^## Title:/ { print $0; exit }' | sed -e 's/## Title[[:space:]]*:[[:space:]]*\(.*\)[[:space:]]*/\1/' -e 's/|c[0-9A-Fa-f]\{8\}//g' -e 's/|r//g' )
 
+# Get Wago ID
+if [ -z "$wagoid" ]; then
+	wagoid=$( awk '/^## X-Wago-ID:/ { print $NF; exit }' <<< "$toc_file" )
+fi
+
 unset toc_file
+
+# unset project ids if they are set to 0
+[ "$wagoid" = "0" ] && wagoid=
 
 echo
 echo "Packaging $package"
@@ -729,12 +739,16 @@ fi
 	echo "Game version: ${game_version}"
 	echo
 )
+if [ -n "$wagoid" ]; then
+	echo "Wago ID: $wagoid${wago_token:+ [token set]}"
+fi
 if [ -n "$project_github_slug" ]; then
 	echo "GitHub: $project_github_slug${github_token:+ [token set]}"
 fi
 if [ -n "$project_site" ] || [ -n "$project_github_slug" ]; then
 	echo
 fi
+echo
 echo "Checkout directory: $topdir"
 echo "Release directory: $releasedir"
 echo
@@ -1293,13 +1307,72 @@ if [ -z "$skip_zipfile" ]; then
 	### Deploy the zipfile.
 	###
 
+	upload_wago=$( [[ -z "$skip_upload" && -n "$wagoid" && -n "$wago_token" ]] && echo true )
 	upload_github=$( [[ -z "$skip_upload" && -n "$tag" && -n "$project_github_slug" && -n "$github_token" ]] && echo true )
 
-	if [[ -n "$upload_github" ]] && ! hash jq &>/dev/null; then
+	if [[ -n "$upload_github" || -n "$upload_wago" ]] && ! hash jq &>/dev/null; then
 		echo "Skipping upload because \"jq\" was not found."
 		echo
 		upload_github=
 		exit_code=1
+	fi
+
+	# Upload to Wago
+	if [ -n "$upload_wago" ] ; then
+		_wago_support_property=""
+		_wago_support_property+="\"supported_retail_patch\": \"${game_version}\", "
+
+		if [ -n "$alpha" ]; then
+			_wago_stability="beta"
+		else
+			_wago_stability="stable"
+		fi
+
+		_wago_payload=$( cat <<-EOF
+		{
+		  "label": "$archive_version",
+		  $_wago_support_property
+		  "stability": "$_wago_stability",
+		  "changelog": $( jq --slurp --raw-input '.' < "$pkgdir/$changelog" )
+		}
+		EOF
+		)
+
+		echo "Uploading $archive_name ($game_version) to Wago"
+		resultfile="$releasedir/wago_result.json"
+		result=$( echo "$_wago_payload" | curl -sS --retry 3 --retry-delay 10 \
+				-w "%{http_code}" -o "$resultfile" \
+				-H "authorization: Bearer $wago_token" \
+				-H "accept: application/json" \
+				-F "metadata=<-" \
+				-F "file=@$archive" \
+				"https://addons.wago.io/api/projects/$wagoid/version"
+		) && {
+			case $result in
+				200|201) echo "Success!" ;;
+				302)
+					echo "Error! ($result)"
+					# don't need to ouput the redirect page
+					exit_code=1
+					;;
+				404)
+					echo "Error! No Wago project for id \"$wagoid\" found."
+					exit_code=1
+					;;
+				*)
+					echo "Error! ($result)"
+					if [ -s "$resultfile" ]; then
+						echo "$(<"$resultfile")"
+					fi
+					exit_code=1
+					;;
+			esac
+		} || {
+			exit_code=1
+		}
+		echo
+
+		rm -f "$resultfile" 2>/dev/null
 	fi
 
 	# Create a GitHub Release for tags and upload the zipfile as an asset.
@@ -1347,7 +1420,7 @@ if [ -z "$skip_zipfile" ]; then
 		  "name": "$tag",
 		  "body": $( jq --slurp --raw-input '.' < "$pkgdir/$changelog" ),
 		  "draft": false,
-		  "prerelease": $( [[ "${tag,,}" == *"beta"* || "${tag,,}" == *"alpha"* ]] && echo true || echo false )
+		  "prerelease": $( [[ -n "$alpha" ]] && echo true || echo false )
 		}
 		EOF
 		)
